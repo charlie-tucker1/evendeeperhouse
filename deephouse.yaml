@@ -41,6 +41,13 @@ camelot:
   mode: hard                     # hard | soft
   allowed_moves: [same, plus_one, minus_one, relative]
 
+search:
+  max_stretch_ratio: 1.06
+  energy_window: 0.35            # |energy(A exit) - energy(B entry)| must be within this (0..1 scale)
+  vocal_active_frac: 0.35
+  l1_weights:                    # overrides of search.engine.DEFAULT_L1_WEIGHTS
+    stretch_penalty: -20.0
+
 render:
   lead_in_bars: 16
   tail_bars: 32

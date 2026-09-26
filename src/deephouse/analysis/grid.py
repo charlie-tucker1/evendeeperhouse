@@ -337,11 +337,20 @@ def _vote_from_novelty(y: np.ndarray, sr: int, g: GridFit) -> tuple[int, float]:
 
 
 def grid_support(y_low: np.ndarray, sr: int, period: float, beat0: float, window_bars: int = 8,
-                 min_contrast: float = 1.5) -> tuple[float, float, list[float]]:
-    """Tracker-independent validation: per ``window_bars`` window, fold the low-band attack at
-    the grid and compare on-beat vs anti-beat attack energy. Windows without kick evidence
-    (breakdowns, hat-only intros) abstain. Returns (confidence, evidence_frac, contrasts)."""
+                 min_contrast: float = 1.5, y_full: np.ndarray | None = None) -> tuple[float, float, list[float]]:
+    """Tracker-independent validation: per ``window_bars`` window, fold a *kick-ness* signal
+    (low-band attack × broadband attack — the kick is the event that is both; off-beat bass
+    notes are low but not broadband, hats the reverse) at the grid and compare on-beat vs
+    anti-beat energy. Windows without kick evidence (breakdowns, hat-only intros) abstain.
+    Returns (confidence, evidence_frac, contrasts)."""
     att, rate = _lowband_attack_env(y_low, sr)
+    if y_full is not None:
+        att_f, _ = _lowband_attack_env(y_full, sr)
+        n_sm = max(int(rate * 0.005), 1)
+        k = np.ones(n_sm) / n_sm
+        a1 = np.convolve(att, k, mode="same")
+        a2 = np.convolve(att_f[: len(a1)], k, mode="same")
+        att = (a1 / (a1.max() or 1.0)) * (a2 / (a2.max() or 1.0))
     win_s = window_bars * 4 * period
     n_win = int(len(att) / rate // win_s)
     if n_win == 0:
@@ -494,7 +503,7 @@ def fit_grid(
     from scipy.signal import butter, sosfiltfilt
 
     y_low = sosfiltfilt(butter(4, 150.0, btype="low", fs=sr, output="sos"), y).astype(np.float32)
-    conf, ev_frac, _ = grid_support(y_low, sr, period, beat0)
+    conf, ev_frac, _ = grid_support(y_low, sr, period, beat0, y_full=y)
     g.evidence_frac = ev_frac
     if "bpm_out_of_band" in flags:
         conf *= 0.5

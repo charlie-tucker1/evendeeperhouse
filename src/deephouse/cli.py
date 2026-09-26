@@ -164,6 +164,56 @@ def render(
         console.print(f"  {r.key:22s} {m['wall_s']:5.1f}s  path={m['path']}  B trim {m['b_trim_db']:+.1f} dB  master {m['master_trim_db']:+.1f} dB  → {p}")
 
 
+@app.command("next")
+def next_cmd(
+    ctx: typer.Context,
+    a: str = typer.Argument(..., help="seed track (sha1 / prefix / filename)"),
+    k: int = typer.Option(5, "--k", help="how many to show / render"),
+    m: int = typer.Option(100, "--m", help="how many L1 candidates to keep"),
+    render_top: bool = typer.Option(False, "--render", help="render the top-k to renders/<run_id>/"),
+    run_id: str | None = typer.Option(None, "--run-id"),
+    report: bool = typer.Option(True, "--report/--no-report", help="write search_report.md + candidates.jsonl"),
+) -> None:
+    """Search v0: enumerate (B, cues, recipe) triples, L0 filter, L1 beat-domain score, rank."""
+    import json
+    import time
+
+    from .analysis.griddoctor import resolve_entry
+    from .search.engine import load_library, search_next
+
+    ea = resolve_entry(ctx.obj, a)
+    lib = load_library(ctx.obj)
+    seed = next((t for t in lib if t.sha1 == ea.sha1), None)
+    if seed is None:
+        raise SystemExit(f"{ea.sha1[:10]} is not fully analysed (needs grid, features, structure)")
+    rep = search_next(ctx.obj, seed, lib, top=m)
+    console.print(rep.table(k))
+    run_id = run_id or time.strftime("%Y%m%d-%H%M%S")
+    out_dir = ctx.obj.path("renders") / run_id
+    if report:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "search_report.md").write_text("```\n" + rep.table(min(m, 100)) + "\n```\n")
+        with (out_dir / "candidates.jsonl").open("w") as f:
+            for c in rep.ranked:
+                f.write(json.dumps(c.to_dict()) + "\n")
+        console.print(f"[dim]report → {out_dir / 'search_report.md'}[/]")
+    if render_top:
+        from .render.engine import render as _render
+        from .render.io import load_track, render_config_from, save_render
+
+        rc = render_config_from(ctx.obj)
+        ta = load_track(ctx.obj, ea)
+        cache = {}
+        for i, c in enumerate(rep.collapsed()[:k], 1):
+            if c.b.sha1 not in cache:
+                cache[c.b.sha1] = load_track(ctx.obj, resolve_entry(ctx.obj, c.b.sha1))
+            res = _render(ta, c.cue_out, cache[c.b.sha1], c.cue_in, c.recipe, rc)
+            res.meta["l1"] = c.l1
+            res.meta["l1_features"] = c.l1_features
+            p = save_render(ctx.obj, res, run_id=run_id, name=f"{i:02d}_{c.b.name[:24]}_{c.recipe.key}")
+            console.print(f"  [{i}] {res.meta['wall_s']:4.1f}s → {p.name}")
+
+
 @app.command()
 def recipes() -> None:
     """List the v1 recipe grid."""
