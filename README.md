@@ -30,7 +30,22 @@ Read in order:
   pump within ~1 dB.
 - `key` — Krumhansl–Schmuckler on cached chroma → Camelot (essentia `edma` preferred on the box).
 
-Next: P0.4 stems (demucs, overnight on the GPU box), P0.7 sections/cues → Gate G0; then the renderer.
+**Session 1c (P0.7, Phase 1, Phase 2 v0) — complete.**
+
+- `structure` — sections (SSM + Foote novelty + low-band change), phrase phase, labels, cue points.
+- grid hardening — real RANSAC (breakdown-proof), kick-ness confidence (tracker-independent).
+- `render` — the pure-function simulator (`render/engine.py`): sample-exact alignment on A's
+  master clock, stems path (bass swap, vocal duck, HPF entry sweep) or LR4 bands path, program-gain
+  match, master. Determinism + golden hash, bit-exact null test, B's kicks on A's grid within 1 ms.
+- `next` — search v0: enumerate (B, cues, recipe) → L0 gates → vectorised beat-domain L1 with the
+  groove-compat features → ranked report; `--render` renders the top-k different transitions.
+- `listen` — ratings to `ratings.jsonl` (the future critic's labels).
+
+Measured on synthetic material: analyze ≈ 8–11 s per 2-min track (CPU, librosa tracker), render ≈ 5 s per
+80-bar transition, L1 ≈ 3.5–5k triples/s.
+
+Next on the box: P0.4 stems (demucs), real-track griddoctor pass, G1/G2 by ear, then P2.3 L2 render features
+and P2.4 one-ply look-ahead.
 
 ## Setup (Fedora / RTX 5070 box)
 
@@ -56,6 +71,10 @@ deephouse list
 deephouse griddoctor <sha1-prefix|filename>       # writes griddoctor_out/<id>/click.wav + grid.png
 deephouse griddoctor <id> --downbeat-shift 2      # fix a downbeat by ear
 deephouse griddoctor <id> --accept                # mark reviewed
+deephouse structure <id>                 # sections + cue points
+deephouse render A B --cue-out 48 --cue-in 8 --recipe all     # 16 recipes → renders/<run>/
+deephouse next A --k 5 --render          # search the library from seed A, render the top 5
+deephouse listen renders/<run>           # rate them 1–5 (+tags) → ratings.jsonl
 ```
 
 Listen to `click.wav`: clicks (1 kHz) must sit on the kicks, accents (1.5 kHz) on the 1.
@@ -75,9 +94,11 @@ deephouse.yaml              config (paths, genre band, grid params, camelot poli
 src/deephouse/
   config.py  ingest.py  audio.py  synth.py  cli.py
   analysis/  grid.py trackers.py griddoctor.py store.py analyze.py camelot.py
-             features.py groove.py key.py
+             features.py groove.py key.py sections.py
+  render/    recipe.py dsp.py engine.py io.py
+  search/    engine.py
+  critic/ mine/                      (later phases)
 docs/GROOVE.md              the micro-timing layer: why, what is measured, what it enables
-  render/ search/ critic/ mine/      (later phases)
 cache/analysis/{sha1}.json  per-track sidecar (grid, key, sections, cues; human overrides)
 library/canonical/{sha1}.flac
 bench/BENCH.md

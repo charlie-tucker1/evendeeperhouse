@@ -215,6 +215,65 @@ def next_cmd(
 
 
 @app.command()
+def listen(
+    ctx: typer.Context,
+    renders_dir: Path = typer.Argument(..., exists=True, help="renders/<run_id>/ directory"),
+    start_at: float = typer.Option(0.0, "--start-at", help="seconds into each render to start playback (e.g. just before the overlap)"),
+    no_play: bool = typer.Option(False, "--no-play", help="don't play audio (rate from another player)"),
+) -> None:
+    """Audition renders and record 1–5 ratings (+ tags) to ratings.jsonl — the critic's training data."""
+    import json
+    import time
+
+    import soundfile as sf
+
+    wavs = sorted(renders_dir.glob("*.wav"))
+    if not wavs:
+        raise SystemExit(f"no .wav files in {renders_dir}")
+    sd = None
+    if not no_play:
+        try:
+            import sounddevice as sd  # type: ignore
+        except Exception:  # noqa: BLE001
+            console.print("[yellow]sounddevice unavailable — rating without playback (open the wav in any player)[/]")
+    ratings_path = ctx.obj.path("ratings")
+    console.print(f"{len(wavs)} render(s). Keys: 1–5 rate, s skip, r replay, q quit. Tags after the rating, e.g. '4 mud, late-swap'.")
+    for w in wavs:
+        meta_p = w.with_name(w.name.replace(".wav", ".render_meta.json"))
+        meta = json.loads(meta_p.read_text()) if meta_p.exists() else {}
+        console.print(f"\n[bold]{w.name}[/]  {meta.get('recipe_key', '')}  L1 {meta.get('l1', float('nan')):.2f}" if meta else f"\n[bold]{w.name}[/]")
+        y, sr = sf.read(str(w), dtype="float32")
+        if sd is not None:
+            ov = meta.get("overlap_start_sample")
+            s0 = int(start_at * sr) if start_at else (max(ov - 4 * meta.get("samples_per_bar", 0), 0) if ov else 0)
+            sd.play(y[s0:], sr)
+        while True:
+            ans = console.input("  rating> ").strip()
+            if ans == "q":
+                if sd is not None:
+                    sd.stop()
+                return
+            if ans == "s":
+                break
+            if ans == "r" and sd is not None:
+                sd.play(y, sr)
+                continue
+            parts = ans.split(maxsplit=1)
+            if parts and parts[0] in ("1", "2", "3", "4", "5"):
+                tags = [t.strip() for t in parts[1].split(",")] if len(parts) > 1 else []
+                rec = {"render_id": w.stem, "run": renders_dir.name, "rating": int(parts[0]), "tags": tags, "ts": time.time(),
+                       "a": meta.get("a"), "b": meta.get("b"), "recipe": meta.get("recipe_key"), "l1": meta.get("l1")}
+                with ratings_path.open("a") as f:
+                    f.write(json.dumps(rec) + "\n")
+                console.print(f"  [green]saved[/] {rec['rating']} {tags}")
+                break
+            console.print("  1–5 [tags], s, r, q")
+        if sd is not None:
+            sd.stop()
+    console.print(f"\nratings → {ratings_path}")
+
+
+@app.command()
 def recipes() -> None:
     """List the v1 recipe grid."""
     from .render.recipe import default_grid

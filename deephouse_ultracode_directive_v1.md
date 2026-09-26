@@ -129,13 +129,15 @@ Grid conventions: `beat0_s` is the time of grid beat index 0, the first beat at 
 
 **P0.8 Groove profile.** *(done, session 1b — new; see `docs/GROOVE.md`)* Per-16th micro-timing template + hit strength per band, swing %, kick transient, bass/hat patterns, sidechain pump. Feeds six L1 groove-compatibility features (§6 P2.2) and, later, groove-transfer / coherent-sidechain render ops.
 
-**P0.7 Sections + cues.** Foote checkerboard novelty on beat-sync [MFCC ⊕ chroma] self-similarity → boundary candidates → snap to nearest downbeat → segments labeled by heuristics: `energy` = normalized full-mix RMS; `vocal` = vocal-stem RMS above threshold; `bass_active` = bass-stem RMS above threshold; `harm_density` = chroma entropy. `cues_out` = phrase boundaries in the final 40% of the track, preferring low-vocal falling-energy sections; `cues_in` = phrase starts in the first 30%, preferring pre-first-drop low-density sections. Cap ~6 cues per side.
+**P0.7 Sections + cues.** *(done, session 1c)* Foote checkerboard novelty on beat-sync [MFCC ⊕ chroma] self-similarity → boundary candidates → snap to nearest downbeat → segments labeled by heuristics: `energy` = normalized full-mix RMS; `vocal` = vocal-stem RMS above threshold; `bass_active` = bass-stem RMS above threshold; `harm_density` = chroma entropy. `cues_out` = phrase boundaries in the final 40% of the track, preferring low-vocal falling-energy sections; `cues_in` = phrase starts in the first 30%, preferring pre-first-drop low-density sections. Cap ~6 cues per side.
 
 **Gate G0.** On a 20-track dev subset: full pipeline runs unattended; `griddoctor` ear-check passes ≥18/20 grids without override; keys sane on spot-check; bench rows recorded (`analyze_s_per_track`, `demucs_s_per_track`). Unit tests: synthetic click-track fixtures (known BPM/phase + noise) recover BPM within ±0.01 and beat0 within ±5 ms *(passing)*; Camelot table exhaustive test *(passing)*.
 
 ---
 
 ## 5. Phase 1 — Renderer (the move executor)
+
+*(P1.1–P1.5 implemented, session 1c: `render/engine.py`; rubberband path unexercised until the box. One design correction from the first render: the low band must not follow the crossfade — A's bass stays at unity until the swap and the handover is equal-power across one beat; a 5 dB thin-out and a −6 dB notch otherwise.)*
 
 A pure function: `render(A, cue_out, B, cue_in, recipe, cfg) → wav + render_meta.json`. Output = `lead_in_bars` of A pre-overlap (default 16) + overlap + `tail_bars` of B (default 32), 44.1 kHz stereo float32 → 24-bit WAV.
 
@@ -154,6 +156,8 @@ A pure function: `render(A, cue_out, B, cue_in, recipe, cfg) → wav + render_me
 ---
 
 ## 6. Phase 2 — Search v0 (Stockfish-classical)
+
+*(P2.1–P2.2 implemented, session 1c: `search/engine.py`, `deephouse next`. P2.3 L2 and P2.4 look-ahead are next.)*
 
 **P2.1 L0 static filters.** Candidate B's must satisfy: Camelot ∈ {same, ±1, relative} (config set; must stay demotable to a soft prior per NORTHSTAR §5.4), `|log2(bpm_A/bpm_B)| ≤ log2(1.06)`, entry-cue energy within a window of A's exit-cue energy (config slope for arc direction). Emit (B, cue_out, cue_in, recipe) triples; cap via config (~10–50k typical).
 
@@ -227,7 +231,8 @@ Order: **P0 → G0 → P1 → G1 → P2 → G2 → P3 → G3 → P4 → G4.** Ea
 
 - **Session 1 — done.** Repo scaffold, `deephouse.yaml`, ingest, constant-tempo grid fit with RANSAC-lite + low-band phase check + time-domain refinement, griddoctor, Camelot module, synthetic fixtures, 51 passing tests, `deephouse selftest` end-to-end.
 - **Session 1b — done.** P0.5 beat features, P0.6 key (chroma-template path), P0.8 groove profile + `groove_compat`; 63 tests.
+- **Session 1c — done.** P0.7 structure; grid: real RANSAC + kick-ness confidence; Phase 1 renderer with tests; Phase 2 P2.1–P2.2 + `next` + `listen`; 81 tests.
 - **Session 2 (on the 5070 box):** install `[analysis]` extras; `deephouse selftest`; ingest a 20-track dev subset; `analyze` with `beat_this`; griddoctor all 20 by ear; `deephouse groove` on a known-straight and a known-swung record; kick off overnight demucs (P0.4); re-run `analyze --force --stages features,groove,key` once stems exist; then P0.7 sections/cues → close G0 with a bench row.
 - **Session 3–4:** renderer → G1. **Session 5–6:** search v0 → G2 — at which point the thing described in the mission exists: seed a track, get five ranked, rendered, phrase-locked transitions to audition.
 
-**Kickoff prompt for the coding agent (next session):** "Read NORTHSTAR.md, then deephouse_ultracode_directive_v1.md in full, then README.md. Session 1 (P0.1–P0.3) is complete and tested — run `pytest` and `deephouse selftest` to confirm the environment before touching anything. Sessions 1 and 1b (P0.1–P0.3, P0.5, P0.6, P0.8) are complete and tested. Execute P0.4 (flag-gated demucs batch into `cache/stems/{sha1}/`) and P0.7 (sections + cues) exactly as specified, as new modules under `analysis/` wired into `analysis/analyze.py` as idempotent stages. Write the tests first for anything with a checkable contract (section boundaries on synthetic material with a known arrangement change; cue selection rules). Record the G0 bench row. Then begin Phase 1."
+**Kickoff prompt for the coding agent (next session):** "Read NORTHSTAR.md, then deephouse_ultracode_directive_v1.md in full, then README.md. Session 1 (P0.1–P0.3) is complete and tested — run `pytest` and `deephouse selftest` to confirm the environment before touching anything. Sessions 1–1c are complete and tested: all of Phase 0 except P0.4 stems, Phase 1, and Phase 2 through P2.2. Run `pytest` and `deephouse selftest` to confirm the environment. Then: (1) P0.4 — flag-gated demucs batch into `cache/stems/{sha1}/` and re-run `analyze --force --stages features,groove,key,structure` so stems feed features/groove/chroma; (2) real-track pass: ingest the 20-track dev subset, `analyze` with beat_this, `griddoctor` every track by ear, record the G0 bench row; (3) `render` two hand-picked tracks with `--recipe all`, listen, close G1; (4) P2.3 L2 render-domain features + P2.4 one-ply look-ahead in `search/`, then `next --render` from a seed against the full library, `listen`, close G2 with a bench row. Write tests first for anything with a checkable contract."
