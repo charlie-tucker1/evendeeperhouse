@@ -52,11 +52,16 @@ def analyze(
     ctx: typer.Context,
     track: list[str] = typer.Argument(None, help="sha1 / prefix / filename; default = all tracks"),
     force: bool = typer.Option(False, "--force", help="Recompute even if cached"),
+    stages: str = typer.Option("grid,features,groove,key", "--stages", help="Comma-separated subset of: grid,features,groove,key"),
 ) -> None:
-    """Fit constant-tempo grids (P0.2). Later: stems, features, key, sections, cues."""
-    from .analysis.analyze import analyze_all
+    """Per-track analysis: grid (P0.2), beat features (P0.5), groove profile (P0.8), key (P0.6)."""
+    from .analysis.analyze import ALL_STAGES, analyze_all
 
-    results = analyze_all(ctx.obj, force=force, only=track or None, log=console.print)
+    st = tuple(x.strip() for x in stages.split(",") if x.strip())
+    bad = [x for x in st if x not in ALL_STAGES]
+    if bad:
+        raise typer.BadParameter(f"unknown stage(s) {bad}; choose from {ALL_STAGES}")
+    results = analyze_all(ctx.obj, force=force, only=track or None, stages=st, log=console.print)
     flagged = [r for r in results if "needs_griddoctor" in r.flags or "phase_flipped_lowband" in r.flags or "downbeat_uncertain" in r.flags]
     done = [r for r in results if not r.skipped]
     if done:
@@ -96,6 +101,34 @@ def griddoctor(
             console.print(f"  click: {o.click_wav}\n  png:   {o.png}")
 
 
+@app.command()
+def groove(ctx: typer.Context, track: list[str] = typer.Argument(..., help="sha1 / prefix / filename")) -> None:
+    """Print a track's groove profile (docs/GROOVE.md)."""
+    from .analysis import store
+    from .analysis.griddoctor import resolve_entry
+    from .analysis.groove import GrooveProfile
+
+    for key in track:
+        e = resolve_entry(ctx.obj, key)
+        doc = store.load_analysis(ctx.obj, e.sha1)
+        if not doc or not doc.get("groove"):
+            console.print(f"[yellow]{e.sha1[:10]}: no groove profile — run `deephouse analyze --stages groove`[/]")
+            continue
+        p = GrooveProfile.from_dict(doc["groove"])
+        console.print(f"[bold]{e.sha1[:10]}[/] {Path(e.source_path).name}   ({p.source}, {p.bars_used} bars)")
+        console.print(f"  swing {p.swing_pct * 100:.1f}%  (conf {p.swing_confidence:.2f})   pump {p.pump_depth_db:.1f} dB / {p.pump_release_ms:.0f} ms   "
+                      f"kick rise {p.kick_rise_ms:.1f} ms  decay {p.kick_decay_ms:.0f} ms  sub {p.kick_sub_ratio:.2f}")
+        t = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
+        t.add_column("16th")
+        for i in range(16):
+            t.add_column(str(i), justify="right")
+        for band in ("low", "mid", "high"):
+            t.add_row(f"Δ {band} ms", *[f"{d:+.0f}" if h > 0.3 else "·" for d, h in zip(p.delta_ms[band], p.hit[band], strict=True)])
+        t.add_row("hat pat", *[f"{v * 16:.1f}" for v in p.hat_pattern])
+        t.add_row("bass pat", *[f"{v * 16:.1f}" for v in p.bass_pattern])
+        console.print(t)
+
+
 @app.command("list")
 def list_cmd(ctx: typer.Context, kind: str = typer.Option("track", "--kind", "-k")) -> None:
     """List registry entries with their grid status."""
@@ -104,17 +137,21 @@ def list_cmd(ctx: typer.Context, kind: str = typer.Option("track", "--kind", "-k
 
     reg = Registry(ctx.obj.path("registry"))
     t = Table(title=f"registry — {kind}s")
-    for col in ("sha1", "name", "dur", "bpm", "beat0", "down", "conf", "rev", "flags"):
+    for col in ("sha1", "name", "dur", "bpm", "beat0", "down", "conf", "key", "swing", "pump", "rev", "flags"):
         t.add_column(col)
     for e in reg.by_kind(kind):
         doc = store.load_analysis(ctx.obj, e.sha1)
         g = store.get_grid(doc) if doc else None
         dur = f"{e.duration_s / 60:.1f}m" if e.duration_s else "?"
         if g:
+            k = (doc.get("key") or {})
+            gr = (doc.get("groove") or {})
             t.add_row(e.sha1[:10], Path(e.source_path).name[:40], dur, f"{g.bpm:.3f}", f"{g.beat0_s:.3f}", str(g.downbeat_offset),
-                      f"{g.confidence:.2f}", "✓" if g.reviewed else "", " ".join(g.flags))
+                      f"{g.confidence:.2f}", k.get("override") or k.get("camelot") or "—",
+                      f"{gr['swing_pct'] * 100:.0f}%" if gr else "—", f"{gr['pump_depth_db']:.1f}" if gr else "—",
+                      "✓" if g.reviewed else "", " ".join(g.flags))
         else:
-            t.add_row(e.sha1[:10], Path(e.source_path).name[:40], dur, "—", "—", "—", "—", "", "not analysed")
+            t.add_row(e.sha1[:10], Path(e.source_path).name[:40], dur, "—", "—", "—", "—", "—", "—", "—", "", "not analysed")
     console.print(t)
 
 

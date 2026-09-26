@@ -30,6 +30,7 @@ grid:
   max_refit_iters: 6
   min_inlier_frac: 0.90          # below → flag for griddoctor
   confidence_flag_threshold: 0.90
+  lowband_flip: auto             # auto | on | off — flip to the kick when the tracker locks the off-beat (auto: librosa only)
 
 key:
   backend: auto                  # auto | essentia | chroma_template

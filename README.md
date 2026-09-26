@@ -20,7 +20,17 @@ Read in order:
 - `griddoctor` — click-overlay WAV + 3-panel diagnostic PNG + human override into the sidecar.
 - `selftest` — end-to-end on synthetic house tracks with known ground truth.
 
-Next: P0.4 stems (demucs, overnight on the GPU box), P0.5 beat features, P0.6 key, P0.7 sections/cues → Gate G0.
+**Session 1b (P0.5, P0.6, P0.8) — complete.**
+
+- `features` — beat-synchronous `.npz` cache (log-mel, RMS, onset, chroma; per stem when cached).
+  Chroma is stem-aware / HPSS-hardened so kicks don't vote on key.
+- `groove` — the micro-timing layer (`docs/GROOVE.md`): per-16th micro-timing template and hit
+  strength in low/mid/high bands, swing %, kick transient, bass and hat patterns, sidechain pump
+  depth/release; plus pairwise `groove_compat` features for L1. Synthetic: swing within 0.05 ms,
+  pump within ~1 dB.
+- `key` — Krumhansl–Schmuckler on cached chroma → Camelot (essentia `edma` preferred on the box).
+
+Next: P0.4 stems (demucs, overnight on the GPU box), P0.7 sections/cues → Gate G0; then the renderer.
 
 ## Setup (Fedora / RTX 5070 box)
 
@@ -39,7 +49,9 @@ sudo dnf install ffmpeg rubberband
 deephouse selftest                       # synthetic end-to-end; must print "selftest OK"
 deephouse ingest ~/music/house --kind track
 deephouse ingest ~/music/sets  --kind set
-deephouse analyze                        # grids for every track; flags the doubtful ones
+deephouse analyze                        # grid + features + groove + key for every track
+deephouse analyze --stages grid          # or a subset; every stage is idempotent
+deephouse groove <id>                    # micro-timing table, swing, pump, patterns
 deephouse list
 deephouse griddoctor <sha1-prefix|filename>       # writes griddoctor_out/<id>/click.wav + grid.png
 deephouse griddoctor <id> --downbeat-shift 2      # fix a downbeat by ear
@@ -63,6 +75,8 @@ deephouse.yaml              config (paths, genre band, grid params, camelot poli
 src/deephouse/
   config.py  ingest.py  audio.py  synth.py  cli.py
   analysis/  grid.py trackers.py griddoctor.py store.py analyze.py camelot.py
+             features.py groove.py key.py
+docs/GROOVE.md              the micro-timing layer: why, what is measured, what it enables
   render/ search/ critic/ mine/      (later phases)
 cache/analysis/{sha1}.json  per-track sidecar (grid, key, sections, cues; human overrides)
 library/canonical/{sha1}.flac

@@ -22,6 +22,15 @@ class SynthTruth:
     downbeat_offset: int
     sr: int
     duration_s: float
+    swing: float = 0.5
+    pump_depth_db: float = 0.0
+    pump_release_s: float = 0.25
+    hats: str = "offbeat8"
+    bass: str = "sustain"
+
+    @property
+    def swing_delay_s(self) -> float:
+        return (self.swing - 0.5) * (60.0 / self.bpm) / 2.0
 
     @property
     def period_s(self) -> float:
@@ -73,13 +82,25 @@ def make_click_track(
     style: str = "house",
     seed: int = 0,
     stereo: bool = True,
+    swing: float = 0.5,
+    pump_depth_db: float = 0.0,
+    pump_release_s: float = 0.25,
+    hats: str = "offbeat8",
+    bass: str = "sustain",
 ) -> tuple[np.ndarray, SynthTruth]:
     """Return ``(audio, truth)``.
 
     ``style='clicks'``: pure clicks (1 kHz), accented (1.5 kHz, louder) on downbeats.
-    ``style='house'``: kick on every beat, off-beat hats, a sustained bass note,
-    louder kick + a chord stab on downbeats, plus a small random per-hit gain
-    variation so the material is not perfectly periodic.
+    ``style='house'``: kick on every beat, hats, bass, a sustained pad, louder kick +
+    a chord stab on downbeats, plus a small random per-hit gain variation so the
+    material is not perfectly periodic. Groove controls (house only):
+
+    * ``swing`` — 16th-note swing as a fraction of the eighth: 0.5 straight, 0.58 rolling,
+      0.667 triplet. Odd 16ths are delayed by ``(swing - 0.5) * eighth``.
+    * ``pump_depth_db`` / ``pump_release_s`` — sidechain: pad + bass gain drops by
+      ``pump_depth_db`` at every beat and recovers linearly (in dB) over ``pump_release_s``.
+    * ``hats`` — ``"offbeat8"`` (positions 2,6,10,14) or ``"16ths"`` (every 16th, odd ones swung).
+    * ``bass`` — ``"sustain"`` (held 55 Hz) or ``"offbeat"`` (short notes on the off-8ths).
     """
     if not 0 <= downbeat_offset <= 3:
         raise ValueError("downbeat_offset must be in 0..3")
@@ -94,32 +115,65 @@ def make_click_track(
     if style == "clicks":
         click = _decaying_sine(sr, 1000.0, 0.03, 0.006)
         accent = _decaying_sine(sr, 1500.0, 0.04, 0.008)
+        k = 0
+        while True:
+            at = int(round((beat0_s + k * period) * sr))
+            if at >= n:
+                break
+            is_down = (k - downbeat_offset) % 4 == 0
+            _place(y, accent if is_down else click, at, 1.0 if is_down else 0.6)
+            k += 1
     else:
         kick = _kick(sr)
         hat = _hat(sr, rng)
-        stab = sum(
-            _decaying_sine(sr, f, 0.5, 0.15) for f in (220.0, 261.63, 329.63)
-        ) / 3.0
-        bass_t = np.arange(n) / sr
-        y += 0.15 * np.sin(2 * np.pi * 55.0 * bass_t)  # sustained A1
-
-    k = 0
-    while True:
-        t_beat = beat0_s + k * period
-        at = int(round(t_beat * sr))
-        if at >= n:
-            break
-        is_down = (k - downbeat_offset) % 4 == 0
-        if style == "clicks":
-            _place(y, accent if is_down else click, at, 1.0 if is_down else 0.6)
-        else:
+        stab = sum(_decaying_sine(sr, f, 0.5, 0.15) for f in (220.0, 261.63, 329.63)) / 3.0
+        bass_note = _decaying_sine(sr, 55.0, 0.18, 0.06)
+        n_att = int(0.005 * sr)                      # 5 ms attack ramp: real basses are not clicks
+        bass_note[:n_att] *= np.linspace(0.0, 1.0, n_att)
+        p16 = period / 4.0
+        swing_delay = (swing - 0.5) * period / 2.0
+        hat_positions = (2, 6, 10, 14) if hats == "offbeat8" else tuple(range(16))
+        t_all = np.arange(n) / sr
+        # sustained layers, then sidechain-pumped to the beat grid
+        sustained = np.zeros(n)
+        if bass == "sustain":
+            sustained += 0.15 * np.sin(2 * np.pi * 55.0 * t_all)
+        pad = sum(np.sin(2 * np.pi * f * t_all) for f in (220.0, 261.63, 329.63)) / 3.0
+        sustained += 0.2 * pad
+        # downbeat chord stabs are sidechained like everything that is not kick or hats
+        k = 0
+        while True:
+            t_beat = beat0_s + k * period
+            at = int(round(t_beat * sr))
+            if at >= n:
+                break
+            if (k - downbeat_offset) % 4 == 0:
+                _place(sustained, stab, at, 0.2)
+            k += 1
+        if pump_depth_db > 0:
+            tau = (t_all - beat0_s) % period                       # time since last beat
+            db = -pump_depth_db * np.clip(1.0 - tau / pump_release_s, 0.0, 1.0)
+            sustained *= 10 ** (db / 20)
+        y += sustained
+        k = 0
+        while True:
+            t_beat = beat0_s + k * period
+            at = int(round(t_beat * sr))
+            if at >= n:
+                break
+            is_down = (k - downbeat_offset) % 4 == 0
             g = 1.0 + 0.05 * rng.standard_normal()
             _place(y, kick, at, (1.0 if is_down else 0.8) * g)
-            if is_down:
-                _place(y, stab, at, 0.35)
-            # off-beat hat
-            _place(y, hat, int(round((t_beat + period / 2) * sr)), 0.8 + 0.1 * rng.standard_normal())
-        k += 1
+            # 16th sub-grid within this beat: positions 4k..4k+3 in the bar
+            bar_pos0 = ((k - downbeat_offset) % 4) * 4
+            for q in range(4):
+                pos = bar_pos0 + q
+                t_q = t_beat + q * p16 + (swing_delay if q % 2 == 1 else 0.0)
+                if pos in hat_positions:
+                    _place(y, hat, int(round(t_q * sr)), 0.8 + 0.1 * rng.standard_normal())
+                if bass == "offbeat" and pos in (2, 6, 10, 14):
+                    _place(y, bass_note, int(round(t_q * sr)), 0.9)
+            k += 1
 
     # normalise then add white noise at the requested SNR
     peak = np.max(np.abs(y)) or 1.0
@@ -132,6 +186,7 @@ def make_click_track(
     if stereo:
         y = np.stack([y, y], axis=1)
     truth = SynthTruth(
-        bpm=bpm, beat0_s=beat0_s, downbeat_offset=downbeat_offset, sr=sr, duration_s=duration_s
+        bpm=bpm, beat0_s=beat0_s, downbeat_offset=downbeat_offset, sr=sr, duration_s=duration_s,
+        swing=swing, pump_depth_db=pump_depth_db, pump_release_s=pump_release_s, hats=hats, bass=bass,
     )
     return y, truth

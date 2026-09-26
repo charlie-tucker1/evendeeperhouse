@@ -123,9 +123,11 @@ Grid conventions: `beat0_s` is the time of grid beat index 0, the first beat at 
 
 **P0.4 Stems.** `demucs -n htdemucs_ft` → 4 stems → FLAC in `cache/stems/{sha1}/`. GPU batch, overnight job (~6–11 GPU-h / 1,000 tracks on the 5070). Flag-gated; the dev subset (20 tracks) gets stems immediately.
 
-**P0.5 Beat features.** Compute the `.npz` contract: STFT → 64-band log-mel → mean per beat (per stem + mix); CQT chroma → median per beat; per-stem RMS per beat. All computed at native tempo — beat aggregation is what buys stretch invariance.
+**P0.5 Beat features.** *(done, session 1b)* Compute the `.npz` contract: STFT → 64-band log-mel → mean per beat (per stem + mix); CQT chroma → median per beat; per-stem RMS per beat. All computed at native tempo — beat aggregation is what buys stretch invariance.
 
-**P0.6 Key.** essentia `KeyExtractor` with the `edma` profile (electronic-music-tuned); map to Camelot (`analysis/camelot.py`, exhaustively tested); store confidence. Fallback: Krumhansl–Schmuckler templates on the cached chroma.
+**P0.6 Key.** *(done, session 1b; essentia path untested until the box)* essentia `KeyExtractor` with the `edma` profile (electronic-music-tuned); map to Camelot (`analysis/camelot.py`, exhaustively tested); store confidence. Fallback: Krumhansl–Schmuckler templates on the cached chroma.
+
+**P0.8 Groove profile.** *(done, session 1b — new; see `docs/GROOVE.md`)* Per-16th micro-timing template + hit strength per band, swing %, kick transient, bass/hat patterns, sidechain pump. Feeds six L1 groove-compatibility features (§6 P2.2) and, later, groove-transfer / coherent-sidechain render ops.
 
 **P0.7 Sections + cues.** Foote checkerboard novelty on beat-sync [MFCC ⊕ chroma] self-similarity → boundary candidates → snap to nearest downbeat → segments labeled by heuristics: `energy` = normalized full-mix RMS; `vocal` = vocal-stem RMS above threshold; `bass_active` = bass-stem RMS above threshold; `harm_density` = chroma entropy. `cues_out` = phrase boundaries in the final 40% of the track, preferring low-vocal falling-energy sections; `cues_in` = phrase starts in the first 30%, preferring pre-first-drop low-density sections. Cap ~6 cues per side.
 
@@ -162,7 +164,8 @@ A pure function: `render(A, cue_out, B, cue_in, recipe, cfg) → wav + render_me
 - `harmonic = mean_b cos(chroma_A[b], chroma_B[b])`,
 - `energy_step = |energy_A_exit − energy_B_entry − target_arc_slope|`,
 - `stretch_penalty = |log2 r|`,
-- `clap_sim` (optional Phase-0 flag): cosine of chunk CLAP embeddings.
+- `clap_sim` (optional Phase-0 flag): cosine of chunk CLAP embeddings,
+- groove (from `analysis.groove.groove_compat`): `flam_risk_ms`, `swing_mismatch_ms`, `bass_placement_step_ms`, `pattern_density`, `pump_mismatch`, `bass_pattern_continuity` (reward).
 `L1 = w · features`, weights in `deephouse.yaml`. Vectorize with numpy over all triples; target ≥2,000 triples/sec.
 
 **P2.3 Render + L2.** Top `M=100` by L1 → parallel render → L2 features on rendered audio: short-term LUFS trajectory std over the seam (flag jumps >1.5 LU), spectral-flux continuity at overlap entry/exit, post-mix 20–150 Hz energy crest ("mud"), measured vocal simultaneity, overlap-chroma dissonance vs consonance templates, plus L1 carry-overs. `L2 = w' · features` (hand weights v1). Persist every feature vector.
@@ -223,7 +226,8 @@ Set-level planner (beam search over the L1/L3 pairwise graph with an energy-arc 
 Order: **P0 → G0 → P1 → G1 → P2 → G2 → P3 → G3 → P4 → G4.** Each phase's output is the next phase's input; every gate ships something listenable or measurable.
 
 - **Session 1 — done.** Repo scaffold, `deephouse.yaml`, ingest, constant-tempo grid fit with RANSAC-lite + low-band phase check + time-domain refinement, griddoctor, Camelot module, synthetic fixtures, 51 passing tests, `deephouse selftest` end-to-end.
-- **Session 2 (on the 5070 box):** install `[analysis]` extras; `deephouse selftest`; ingest a 20-track dev subset; `analyze` with `beat_this`; griddoctor all 20 by ear; kick off overnight demucs (P0.4); then features/key/sections/cues (P0.5–P0.7) → close G0 with a bench row.
+- **Session 1b — done.** P0.5 beat features, P0.6 key (chroma-template path), P0.8 groove profile + `groove_compat`; 63 tests.
+- **Session 2 (on the 5070 box):** install `[analysis]` extras; `deephouse selftest`; ingest a 20-track dev subset; `analyze` with `beat_this`; griddoctor all 20 by ear; `deephouse groove` on a known-straight and a known-swung record; kick off overnight demucs (P0.4); re-run `analyze --force --stages features,groove,key` once stems exist; then P0.7 sections/cues → close G0 with a bench row.
 - **Session 3–4:** renderer → G1. **Session 5–6:** search v0 → G2 — at which point the thing described in the mission exists: seed a track, get five ranked, rendered, phrase-locked transitions to audition.
 
-**Kickoff prompt for the coding agent (next session):** "Read NORTHSTAR.md, then deephouse_ultracode_directive_v1.md in full, then README.md. Session 1 (P0.1–P0.3) is complete and tested — run `pytest` and `deephouse selftest` to confirm the environment before touching anything. Execute P0.4–P0.7 exactly as specified: stems (flag-gated demucs batch), beat-synchronous features to the `.npz` contract in §3, key detection with Camelot mapping, sections + cues. Each step is a new module under `analysis/` wired into `analysis/analyze.py` as an idempotent stage. Write the tests first for anything with a checkable contract (npz shapes/dtypes, beat aggregation against synthetic material, key detection on synthetic chord stabs). Record the G0 bench row."
+**Kickoff prompt for the coding agent (next session):** "Read NORTHSTAR.md, then deephouse_ultracode_directive_v1.md in full, then README.md. Session 1 (P0.1–P0.3) is complete and tested — run `pytest` and `deephouse selftest` to confirm the environment before touching anything. Sessions 1 and 1b (P0.1–P0.3, P0.5, P0.6, P0.8) are complete and tested. Execute P0.4 (flag-gated demucs batch into `cache/stems/{sha1}/`) and P0.7 (sections + cues) exactly as specified, as new modules under `analysis/` wired into `analysis/analyze.py` as idempotent stages. Write the tests first for anything with a checkable contract (section boundaries on synthetic material with a known arrangement change; cue selection rules). Record the G0 bench row. Then begin Phase 1."

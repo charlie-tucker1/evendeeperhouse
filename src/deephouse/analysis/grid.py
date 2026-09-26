@@ -197,9 +197,11 @@ def lowband_phase_check(y: np.ndarray, sr: int, period: float, beat0: float, win
                         flip_ratio: float = 1.5) -> tuple[float, float, bool]:
     """Genre prior: four-on-the-floor means the kick *is* the beat.
 
-    Compare low-band (<150 Hz) attack energy at grid beats vs at anti-beats. If the
-    anti-beat wins decisively (``flip_ratio``), the tracker locked onto the off-beat
-    (hats/bass bounce) and the phase is flipped by half a period.
+    The kick is the one event that is simultaneously low-heavy (<150 Hz) *and* broadband-
+    transient (its click). Off-beat hats are transient but not low; off-beat bass is low but
+    not (very) transient. So each phase is scored by the product of its normalised low-band
+    attack and full-band attack; if the anti-beat wins decisively (``flip_ratio``) the tracker
+    locked onto the off-beat and the phase is flipped by half a period.
 
     Returns (beat0, on_off_ratio, flipped).
     """
@@ -207,9 +209,18 @@ def lowband_phase_check(y: np.ndarray, sr: int, period: float, beat0: float, win
 
     sos = butter(4, 150.0, btype="low", fs=sr, output="sos")
     y_low = sosfiltfilt(sos, y).astype(np.float32)
-    on = _attack_strength(_fold_energy(y_low, sr, period, beat0, window_s), sr).max()
-    off = _attack_strength(_fold_energy(y_low, sr, period, beat0 + period / 2, window_s), sr).max()
-    ratio = float(on / off) if off > 0 else float("inf")
+    sm = 5 * (sr // 1000)  # 5 ms: tolerate the low-pass group delay between click and low attack
+
+    def attacks(sig: np.ndarray, phase: float) -> np.ndarray:
+        return _smooth(_attack_strength(_fold_energy(sig, sr, period, phase, window_s), sr), sm)
+
+    low_on, low_off = attacks(y_low, beat0), attacks(y_low, beat0 + period / 2)
+    full_on, full_off = attacks(y, beat0), attacks(y, beat0 + period / 2)
+    n_low = max(low_on.max(), low_off.max()) or 1.0
+    n_full = max(full_on.max(), full_off.max()) or 1.0
+    on = float(((low_on / n_low) * (full_on / n_full)).max())
+    off = float(((low_off / n_low) * (full_off / n_full)).max())
+    ratio = on / off if off > 0 else float("inf")
     if off > flip_ratio * on:
         return (beat0 + period / 2) % period, ratio, True
     return beat0, ratio, False
@@ -309,6 +320,7 @@ def fit_grid(
     reject_ms: float = 30.0,
     max_refit_iters: int = 6,
     confidence_flag_threshold: float = 0.9,
+    lowband_flip: str = "auto",
 ) -> GridFit:
     """Fit a constant-tempo grid to mono audio ``y``.
 
@@ -365,9 +377,15 @@ def fit_grid(
 
     # --- 4a. genre prior: the kick is the beat. Flip half a period if the tracker locked
     #         onto the off-beat (hats / bass bounce). Flagged so griddoctor surfaces it.
-    beat0, lowband_ratio, flipped = lowband_phase_check(y, sr, period, beat0)
-    if flipped:
+    #         Policy: "on" always, "off" never, "auto" = only for the heuristic librosa tracker
+    #         (learned trackers are trusted on phase; the check still runs as a diagnostic).
+    allow_flip = lowband_flip == "on" or (lowband_flip == "auto" and est.backend == "librosa")
+    beat0_chk, lowband_ratio, flipped = lowband_phase_check(y, sr, period, beat0)
+    if flipped and allow_flip:
+        beat0 = beat0_chk
         flags.append("phase_flipped_lowband")
+    elif flipped:
+        flags.append("lowband_suggests_flip")
 
     # --- 4b. sub-hop phase refinement (time-domain attack), confined to ±reject window
     beat0_ref, contrast = refine_phase(y, sr, period, beat0, window_s=reject_s)
