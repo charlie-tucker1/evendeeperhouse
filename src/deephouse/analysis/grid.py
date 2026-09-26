@@ -43,6 +43,7 @@ class GridFit:
     coverage: float = 1.0
     onset_contrast: float = 0.0
     lowband_on_off_ratio: float = 0.0
+    evidence_frac: float = 0.0
     residual_rms_ms: float = 0.0
     n_tracker_beats: int = 0
     n_refit_iters: int = 0
@@ -126,38 +127,62 @@ class _LinFit:
     iters: int
 
 
-def ransac_linear_fit(beats_s: np.ndarray, period0: float, reject_s: float, max_iters: int) -> _LinFit:
-    """Regress beat times onto integer indices with iterative outlier rejection.
+def ransac_linear_fit(beats_s: np.ndarray, period0: float, reject_s: float, max_iters: int,
+                      anchor_stride: int = 4, spans: tuple[int, ...] = (8, 16, 32, 64, 128)) -> _LinFit:
+    """Robust constant-tempo fit of tracker beats: proper RANSAC, deterministic.
 
-    Index assignment is recomputed every iteration from the current fit, so a
-    tracker that skipped or doubled a beat is handled naturally.
+    Hypotheses: every (anchor beat i, span m) pair proposes ``period = (t[i+m] - t[i]) / round(Δ/period0)``
+    and phase ``t[i]``; each hypothesis is scored by how many tracker beats fall within ``reject_s``
+    of its grid. The winner seeds an iterative least-squares refit on inliers with index
+    re-assignment. Unlike incremental index assignment, a glitched beat (breakdowns, tracker
+    skips) cannot poison everything after it — it simply fails to vote.
     """
     t = np.asarray(beats_s, dtype=np.float64)
     if t.size < 4:
         raise ValueError("need at least 4 tracker beats to fit a grid")
-    # Initial index assignment is *incremental*: consecutive tracker differences are
-    # accurate to ±hop, whereas a rough global period accumulates drift over hundreds
-    # of beats and scrambles indices mid-track. A skipped beat becomes a jump of 2.
-    k = np.concatenate([[0.0], np.cumsum(np.maximum(np.round(np.diff(t) / period0), 1.0))])
-    period, intercept = period0, t[0]
-    inlier = np.ones_like(t, dtype=bool)
+    n = t.size
+    best: tuple[int, float, float, float] | None = None       # (inliers, -rms, period, phase)
+    for i in range(0, n, anchor_stride):
+        for m in spans:
+            j = i + m
+            if j >= n:
+                continue
+            delta = t[j] - t[i]
+            steps = int(round(delta / period0))
+            if steps < 1:
+                continue
+            p_h = delta / steps
+            if abs(p_h / period0 - 1.0) > 0.08:                     # not a plausible period
+                continue
+            r = (t - t[i]) / p_h
+            res = (r - np.round(r)) * p_h
+            inl = np.abs(res) <= reject_s
+            cnt = int(inl.sum())
+            rms = float(np.sqrt(np.mean(res[inl] ** 2))) if cnt else float("inf")
+            cand = (cnt, -rms, p_h, t[i])
+            if best is None or cand[:2] > best[:2]:
+                best = cand
+    if best is None:                                               # degenerate: fall back to a plain fit
+        best = (n, 0.0, period0, t[0])
+    period, intercept = best[2], best[3]
+    inlier = np.ones(n, dtype=bool)
     iters = 0
     for iters in range(1, max_iters + 1):
-        if iters > 1:
-            k = np.round((t - intercept) / period)
-        A = np.stack([np.ones_like(k), k], axis=1)
-        coef, *_ = np.linalg.lstsq(A[inlier], t[inlier], rcond=None)
-        intercept, period = float(coef[0]), float(coef[1])
+        k = np.round((t - intercept) / period)
         residual = t - (intercept + period * k)
         new_inlier = np.abs(residual) <= reject_s
         if new_inlier.sum() < 4:
             break
-        if np.array_equal(new_inlier, inlier):
+        A = np.stack([np.ones_like(k), k], axis=1)
+        coef, *_ = np.linalg.lstsq(A[new_inlier], t[new_inlier], rcond=None)
+        intercept, period = float(coef[0]), float(coef[1])
+        if np.array_equal(new_inlier, inlier) and iters > 1:
             inlier = new_inlier
             break
         inlier = new_inlier
     k = np.round((t - intercept) / period)
     residual = t - (intercept + period * k)
+    inlier = np.abs(residual) <= reject_s
     return _LinFit(period=period, intercept=intercept, inlier=inlier, residual=residual, iters=iters)
 
 
@@ -308,6 +333,60 @@ def _vote_from_novelty(y: np.ndarray, sr: int, g: GridFit) -> tuple[int, float]:
     return off, conf
 
 
+# ============================================================================ grid support (confidence)
+
+
+def grid_support(y_low: np.ndarray, sr: int, period: float, beat0: float, window_bars: int = 8,
+                 min_contrast: float = 1.5) -> tuple[float, float, list[float]]:
+    """Tracker-independent validation: per ``window_bars`` window, fold the low-band attack at
+    the grid and compare on-beat vs anti-beat attack energy. Windows without kick evidence
+    (breakdowns, hat-only intros) abstain. Returns (confidence, evidence_frac, contrasts)."""
+    att, rate = _lowband_attack_env(y_low, sr)
+    win_s = window_bars * 4 * period
+    n_win = int(len(att) / rate // win_s)
+    if n_win == 0:
+        return 0.0, 0.0, []
+    contrasts, peaks = [], []
+    for w in range(n_win):
+        s0, s1 = int(w * win_s * rate), int((w + 1) * win_s * rate)
+        seg = att[s0:s1]
+        ph0 = (beat0 - w * win_s) % period
+        on = _fold_env(seg, rate, period, ph0, 0.020)
+        off = _fold_env(seg, rate, period, (ph0 + period / 2) % period, 0.020)
+        peaks.append(float(on.max()))
+        contrasts.append(float(on.max() / off.max()) if off.max() > 0 else float("inf"))
+    peaks_a = np.array(peaks)
+    evidence = peaks_a > 0.2 * (np.median(peaks_a) or 1.0)
+    ev_frac = float(evidence.mean())
+    if not evidence.any():
+        return 0.0, 0.0, contrasts
+    good = np.array([c >= min_contrast for c in contrasts])[evidence].mean()
+    conf = float(good) * float(min(1.0, np.sqrt(ev_frac / 0.5)))
+    return float(np.clip(conf, 0.0, 1.0)), ev_frac, contrasts
+
+
+def _lowband_attack_env(y_low: np.ndarray, sr: int) -> tuple[np.ndarray, float]:
+    """Positive-slope (attack) envelope of the low band, decimated to ~4 kHz."""
+    D = max(int(round(sr / 4000.0)), 1)
+    n_sm = max(sr // 1000, 1)
+    e = np.convolve(np.asarray(y_low, dtype=np.float64) ** 2, np.ones(n_sm) / n_sm, mode="same")[::D]
+    rate = sr / D
+    d = np.diff(e, prepend=e[:1])
+    return np.convolve(np.maximum(d, 0.0), np.ones(max(int(rate * 0.002), 1)) / max(int(rate * 0.002), 1), mode="same"), rate
+
+
+def _fold_env(sig: np.ndarray, rate: float, period: float, phase: float, half_win_s: float) -> np.ndarray:
+    W = int(round(half_win_s * rate))
+    n = len(sig)
+    k0 = int(np.ceil((half_win_s - phase) / period))
+    k1 = int(np.floor(((n - 1) / rate - half_win_s - phase) / period))
+    if k1 < k0:
+        return np.zeros(2 * W)
+    centers = np.round((phase + period * np.arange(k0, k1 + 1)) * rate).astype(np.int64)
+    idx = centers[:, None] + np.arange(-W, W)[None, :]
+    return sig[idx].mean(axis=0)
+
+
 # ============================================================================ main entry
 
 
@@ -410,8 +489,13 @@ def fit_grid(
     if dconf < 0.5:
         flags.append("downbeat_uncertain")
 
-    # --- 6. confidence
-    conf = inlier_frac * coverage
+    # --- 6. confidence: kick-on-grid support per 8-bar window (tracker-independent; windows
+    #        without kick evidence abstain, so breakdowns do not read as disagreement)
+    from scipy.signal import butter, sosfiltfilt
+
+    y_low = sosfiltfilt(butter(4, 150.0, btype="low", fs=sr, output="sos"), y).astype(np.float32)
+    conf, ev_frac, _ = grid_support(y_low, sr, period, beat0)
+    g.evidence_frac = ev_frac
     if "bpm_out_of_band" in flags:
         conf *= 0.5
     if duration < 20.0:

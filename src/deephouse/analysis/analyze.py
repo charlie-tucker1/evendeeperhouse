@@ -5,7 +5,8 @@ Stages (each idempotent, each skippable, each re-runnable with ``force``):
   features  P0.5  beat-synchronous features → ``{sha1}.npz`` (uses stems if cached)
   groove    P0.8  micro-timing / pattern / pump profile → sidecar ``groove``
   key       P0.6  key → Camelot → sidecar ``key``
-Later: stems (P0.4, GPU batch), sections + cues (P0.7).
+  structure P0.7  sections + cues → sidecar ``structure`` (+ ``bars.phrase0_bar``)
+Later: stems (P0.4, GPU batch).
 """
 
 from __future__ import annotations
@@ -23,8 +24,9 @@ from .features import STEMS, compute_beat_features, has_stems, load_features, sa
 from .grid import fit_grid
 from .groove import bands_from_mix, bands_from_stems, compute_groove
 from .key import estimate_key
+from .sections import analyze_structure
 
-ALL_STAGES = ("grid", "features", "groove", "key")
+ALL_STAGES = ("grid", "features", "groove", "key", "structure")
 
 
 @dataclass
@@ -41,6 +43,7 @@ class AnalyzeResult:
     camelot: str | None = None
     swing_pct: float | None = None
     pump_db: float | None = None
+    n_sections: int | None = None
 
     @property
     def skipped(self) -> bool:
@@ -142,12 +145,31 @@ def analyze_track(cfg: Config, entry: RegistryEntry, force: bool = False,
         store.save_analysis(cfg, entry.sha1, doc)
         ran.append("key")
 
+    # ---- structure (sections + cues)
+    if "structure" in stages and (force or not doc.get("structure")):
+        if not npz.exists():
+            y, sr = audio()
+            save_features(npz, compute_beat_features({"mix": y, **(_load_stems(cfg, entry.sha1, sr) or {})}, sr, g))
+        feats = load_features(npz)
+        try:
+            st = analyze_structure(feats, g, phrase_bars=int(cfg.genre.bars_per_phrase))
+            doc["structure"] = st.to_dict()
+            doc["bars"] = {"bar0_beat": int(g.downbeat_offset), "phrase0_bar": int(st.phrase0_bar)}
+            doc["cues_in"] = [c.__dict__ for c in st.cues_in]
+            doc["cues_out"] = [c.__dict__ for c in st.cues_out]
+            doc["sections"] = [s_.__dict__ for s_ in st.sections]
+        except ValueError as e:                       # too short
+            doc["structure"] = {"error": str(e)}
+        store.save_analysis(cfg, entry.sha1, doc)
+        ran.append("structure")
+
     gr = doc.get("groove") or {}
     key = doc.get("key") or {}
     return AnalyzeResult(
         entry.sha1, name, g.bpm, g.beat0_s, g.downbeat_offset, g.confidence, list(g.flags),
         time.time() - t0, stages_run=ran, camelot=key.get("override") or key.get("camelot"),
         swing_pct=gr.get("swing_pct"), pump_db=gr.get("pump_depth_db"),
+        n_sections=len(doc["sections"]) if doc.get("sections") else None,
     )
 
 
@@ -180,5 +202,7 @@ def analyze_all(cfg: Config, force: bool = False, only: list[str] | None = None,
             extra += f"  swing {r.swing_pct * 100:.0f}%"
         if r.pump_db is not None:
             extra += f"  pump {r.pump_db:.1f}dB"
+        if r.n_sections is not None:
+            extra += f"  {r.n_sections} sections"
         log(f"  [{i}/{len(entries)}] {tag:22s} {r.bpm:8.3f} bpm  beat0 {r.beat0_s:.3f}s  down {r.downbeat_offset}  conf {r.confidence:.2f}{extra}  {r.name[:40]}{flag}")
     return results

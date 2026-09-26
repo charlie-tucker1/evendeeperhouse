@@ -87,6 +87,7 @@ def make_click_track(
     pump_release_s: float = 0.25,
     hats: str = "offbeat8",
     bass: str = "sustain",
+    arrangement: list[tuple[int, set[str]]] | None = None,
 ) -> tuple[np.ndarray, SynthTruth]:
     """Return ``(audio, truth)``.
 
@@ -101,6 +102,9 @@ def make_click_track(
       ``pump_depth_db`` at every beat and recovers linearly (in dB) over ``pump_release_s``.
     * ``hats`` — ``"offbeat8"`` (positions 2,6,10,14) or ``"16ths"`` (every 16th, odd ones swung).
     * ``bass`` — ``"sustain"`` (held 55 Hz) or ``"offbeat"`` (short notes on the off-8ths).
+    * ``arrangement`` — list of ``(n_bars, layers)`` from the first downbeat, layers ⊆
+      {"kick", "hats", "bass", "pad", "stab"}; the last entry repeats to the end. ``None`` = all on.
+      Section boundaries fall on bar starts, giving ground truth for structure detection.
     """
     if not 0 <= downbeat_offset <= 3:
         raise ValueError("downbeat_offset must be in 0..3")
@@ -111,6 +115,38 @@ def make_click_track(
     n = int(round(duration_s * sr))
     y = np.zeros(n, dtype=np.float64)
     period = 60.0 / bpm
+
+    bar_s = 4 * period
+    first_down = beat0_s + downbeat_offset * period
+
+    def layer_on(layer: str, t: float) -> bool:
+        if arrangement is None:
+            return True
+        bar = int(np.floor((t - first_down) / bar_s))
+        if bar < 0:
+            return True
+        acc = 0
+        for n_bars, layers in arrangement:
+            acc += n_bars
+            if bar < acc:
+                return layer in layers
+        return layer in arrangement[-1][1]
+
+    def layer_gate(layer: str) -> np.ndarray:
+        """Per-sample 0/1 gate with 20 ms edges for sustained layers."""
+        if arrangement is None:
+            return np.ones(n)
+        t_all_ = np.arange(n) / sr
+        bars = np.floor((t_all_ - first_down) / bar_s).astype(int)
+        gate = np.ones(n)
+        acc = 0
+        for n_bars, layers in arrangement:
+            sel = (bars >= acc) & (bars < acc + n_bars)
+            gate[sel] = 1.0 if layer in layers else 0.0
+            acc += n_bars
+        gate[bars >= acc] = 1.0 if layer in arrangement[-1][1] else 0.0
+        k = max(int(0.02 * sr), 1)
+        return np.convolve(gate, np.ones(k) / k, mode="same")
 
     if style == "clicks":
         click = _decaying_sine(sr, 1000.0, 0.03, 0.006)
@@ -137,9 +173,9 @@ def make_click_track(
         # sustained layers, then sidechain-pumped to the beat grid
         sustained = np.zeros(n)
         if bass == "sustain":
-            sustained += 0.15 * np.sin(2 * np.pi * 55.0 * t_all)
+            sustained += 0.15 * np.sin(2 * np.pi * 55.0 * t_all) * layer_gate("bass")
         pad = sum(np.sin(2 * np.pi * f * t_all) for f in (220.0, 261.63, 329.63)) / 3.0
-        sustained += 0.2 * pad
+        sustained += 0.2 * pad * layer_gate("pad")
         # downbeat chord stabs are sidechained like everything that is not kick or hats
         k = 0
         while True:
@@ -147,7 +183,7 @@ def make_click_track(
             at = int(round(t_beat * sr))
             if at >= n:
                 break
-            if (k - downbeat_offset) % 4 == 0:
+            if (k - downbeat_offset) % 4 == 0 and layer_on("stab", t_beat):
                 _place(sustained, stab, at, 0.2)
             k += 1
         if pump_depth_db > 0:
@@ -163,15 +199,16 @@ def make_click_track(
                 break
             is_down = (k - downbeat_offset) % 4 == 0
             g = 1.0 + 0.05 * rng.standard_normal()
-            _place(y, kick, at, (1.0 if is_down else 0.8) * g)
+            if layer_on("kick", t_beat):
+                _place(y, kick, at, (1.0 if is_down else 0.8) * g)
             # 16th sub-grid within this beat: positions 4k..4k+3 in the bar
             bar_pos0 = ((k - downbeat_offset) % 4) * 4
             for q in range(4):
                 pos = bar_pos0 + q
                 t_q = t_beat + q * p16 + (swing_delay if q % 2 == 1 else 0.0)
-                if pos in hat_positions:
+                if pos in hat_positions and layer_on("hats", t_q):
                     _place(y, hat, int(round(t_q * sr)), 0.8 + 0.1 * rng.standard_normal())
-                if bass == "offbeat" and pos in (2, 6, 10, 14):
+                if bass == "offbeat" and pos in (2, 6, 10, 14) and layer_on("bass", t_q):
                     _place(y, bass_note, int(round(t_q * sr)), 0.9)
             k += 1
 

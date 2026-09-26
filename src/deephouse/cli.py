@@ -52,9 +52,9 @@ def analyze(
     ctx: typer.Context,
     track: list[str] = typer.Argument(None, help="sha1 / prefix / filename; default = all tracks"),
     force: bool = typer.Option(False, "--force", help="Recompute even if cached"),
-    stages: str = typer.Option("grid,features,groove,key", "--stages", help="Comma-separated subset of: grid,features,groove,key"),
+    stages: str = typer.Option("grid,features,groove,key,structure", "--stages", help="Comma-separated subset of: grid,features,groove,key,structure"),
 ) -> None:
-    """Per-track analysis: grid (P0.2), beat features (P0.5), groove profile (P0.8), key (P0.6)."""
+    """Per-track analysis: grid (P0.2), beat features (P0.5), groove (P0.8), key (P0.6), sections + cues (P0.7)."""
     from .analysis.analyze import ALL_STAGES, analyze_all
 
     st = tuple(x.strip() for x in stages.split(",") if x.strip())
@@ -171,6 +171,30 @@ def recipes() -> None:
 
     for r in default_grid():
         console.print(f"  {r.key:22s} overlap {r.overlap_bars:2d} bars  entry {r.entry_curve:11s} bass swap @ {r.bass_swap_frac:.2f}  hpf sweep {r.entry_hpf_sweep}")
+
+
+@app.command()
+def structure(ctx: typer.Context, track: list[str] = typer.Argument(..., help="sha1 / prefix / filename")) -> None:
+    """Print a track's sections and cue points."""
+    from .analysis import store
+    from .analysis.griddoctor import resolve_entry
+
+    for key in track:
+        e = resolve_entry(ctx.obj, key)
+        doc = store.load_analysis(ctx.obj, e.sha1)
+        st = (doc or {}).get("structure")
+        if not st or "error" in st:
+            console.print(f"[yellow]{e.sha1[:10]}: no structure — run `deephouse analyze --stages structure`[/]")
+            continue
+        console.print(f"[bold]{e.sha1[:10]}[/] {Path(e.source_path).name}   {st['n_bars']} bars, phrase0 {st['phrase0_bar']}")
+        t = Table(box=None, padding=(0, 1), header_style="bold")
+        for col in ("bars", "label", "energy", "vocal", "bass", "harm"):
+            t.add_column(col)
+        for s_ in st["sections"]:
+            t.add_row(f"{s_['start_bar']:>3}–{s_['end_bar']:<3}", s_["label"], f"{s_['energy']:.2f}", "v" if s_["vocal"] else "", "b" if s_["bass_active"] else "", f"{s_['harm_density']:.2f}")
+        console.print(t)
+        console.print("  cues in : " + "  ".join(f"bar {c['bar']} ({c['score']:.2f})" for c in st["cues_in"]))
+        console.print("  cues out: " + "  ".join(f"bar {c['bar']} ({c['score']:.2f})" for c in st["cues_out"]))
 
 
 @app.command("list")

@@ -158,3 +158,30 @@ def test_key_templates_exact(pc, minor, code):
     est = estimate_from_chroma(v)
     assert est.camelot == code
     assert est.confidence > 0.5
+
+
+# ------------------------------------------------------------------ structure (P0.7)
+
+
+def test_structure_boundaries_labels_and_cues(sr):
+    from deephouse.analysis.sections import analyze_structure
+
+    full = {"kick", "hats", "bass", "pad", "stab"}
+    arr = [(8, {"hats", "pad"}), (16, full), (8, {"pad", "stab"}), (16, full), (8, {"kick", "hats"})]
+    y, tr = make_click_track(bpm=124.0, beat0_s=0.2, downbeat_offset=1, duration_s=120.0, sr=sr, style="house",
+                             arrangement=arr, snr_db=25, seed=3)
+    m = to_mono(y)
+    g = fit_grid(m, sr, tracker="librosa")
+    assert abs(g.bpm - 124.0) < 0.01 and g.confidence > 0.9          # breakdowns must not break the grid
+    f = compute_beat_features({"mix": m}, sr, g)
+    st = analyze_structure(f, g)
+    truth = [8, 24, 32, 48]
+    assert all(min(abs(b - t) for b in st.boundaries) <= 1 for t in truth), st.boundaries
+    assert len(st.boundaries) <= 6
+    labels = [s.label for s in st.sections]
+    assert labels[0] == "intro" and labels[-1] == "outro" and "breakdown" in labels and "main" in labels
+    assert st.phrase0_bar == 0
+    assert any(c.bar in (0, 8) for c in st.cues_in)
+    assert st.cues_out and st.cues_out[-1].bar == 48 and max(st.cues_out, key=lambda c: c.score).bar == 48
+    d = st.to_dict()
+    assert d["n_bars"] == st.n_bars and len(d["sections"]) == len(st.sections)
