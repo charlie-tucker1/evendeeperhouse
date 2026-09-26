@@ -129,6 +129,50 @@ def groove(ctx: typer.Context, track: list[str] = typer.Argument(..., help="sha1
         console.print(t)
 
 
+@app.command()
+def render(
+    ctx: typer.Context,
+    a: str = typer.Argument(..., help="outgoing track (sha1 / prefix / filename)"),
+    b: str = typer.Argument(..., help="incoming track"),
+    cue_out: int = typer.Option(..., "--cue-out", help="A's bar where the overlap starts"),
+    cue_in: int = typer.Option(0, "--cue-in", help="B's bar that lands on A's cue-out downbeat"),
+    recipe: str = typer.Option("ov16_eqp_bs50_hpf0", "--recipe", help="recipe key from `deephouse recipes`, or 'all'"),
+    lead_in: int | None = typer.Option(None, "--lead-in", help="bars of A before the overlap"),
+    tail: int | None = typer.Option(None, "--tail", help="bars of B after the overlap"),
+    no_stems: bool = typer.Option(False, "--no-stems", help="force the band-split path"),
+    run_id: str | None = typer.Option(None, "--run-id"),
+) -> None:
+    """Render one transition (or all 16 recipes) to renders/<run_id>/ (Phase 1)."""
+    from .analysis.griddoctor import resolve_entry
+    from .render.engine import render as _render
+    from .render.io import load_track, render_config_from, save_render
+    from .render.recipe import default_grid
+
+    ea, eb = resolve_entry(ctx.obj, a), resolve_entry(ctx.obj, b)
+    ta, tb = load_track(ctx.obj, ea, with_stems=not no_stems), load_track(ctx.obj, eb, with_stems=not no_stems)
+    rc = render_config_from(ctx.obj, lead_in_bars=lead_in, tail_bars=tail)
+    grid = default_grid()
+    recipes = grid if recipe == "all" else [r for r in grid if r.key == recipe]
+    if not recipes:
+        raise typer.BadParameter(f"unknown recipe {recipe!r}; see `deephouse recipes`")
+    console.print(f"A {ea.sha1[:10]} {ta.grid.bpm:.3f} bpm ({ta.n_bars} bars, stems={ta.stems is not None})   "
+                  f"B {eb.sha1[:10]} {tb.grid.bpm:.3f} bpm ({tb.n_bars} bars, stems={tb.stems is not None})   rate {ta.grid.bpm / tb.grid.bpm:.4f}")
+    for r in recipes:
+        res = _render(ta, cue_out, tb, cue_in, r, rc)
+        p = save_render(ctx.obj, res, run_id=run_id)
+        m = res.meta
+        console.print(f"  {r.key:22s} {m['wall_s']:5.1f}s  path={m['path']}  B trim {m['b_trim_db']:+.1f} dB  master {m['master_trim_db']:+.1f} dB  → {p}")
+
+
+@app.command()
+def recipes() -> None:
+    """List the v1 recipe grid."""
+    from .render.recipe import default_grid
+
+    for r in default_grid():
+        console.print(f"  {r.key:22s} overlap {r.overlap_bars:2d} bars  entry {r.entry_curve:11s} bass swap @ {r.bass_swap_frac:.2f}  hpf sweep {r.entry_hpf_sweep}")
+
+
 @app.command("list")
 def list_cmd(ctx: typer.Context, kind: str = typer.Option("track", "--kind", "-k")) -> None:
     """List registry entries with their grid status."""

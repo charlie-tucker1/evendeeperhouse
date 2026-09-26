@@ -41,6 +41,16 @@ camelot:
   mode: hard                     # hard | soft
   allowed_moves: [same, plus_one, minus_one, relative]
 
+render:
+  lead_in_bars: 16
+  tail_bars: 32
+  split_hz: 120.0                # LR4 crossover for the no-stems bass swap
+  target_lufs: -9.0
+  ceiling_dbtp: -1.0
+  hpf_sweep_from_hz: 250.0
+  hpf_sweep_to_hz: 20.0
+  stretch_backend: auto          # auto | rubberband | resample
+
 griddoctor:
   excerpt_seconds: 30.0
   excerpt_offset_frac: 0.25      # start the excerpt 25% into the track (past the intro)
