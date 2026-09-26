@@ -1,0 +1,51 @@
+# deephouse — single source of runtime configuration.
+# Every module reads through deephouse.config.load(); nothing hard-codes these.
+
+paths:
+  library_canonical: library/canonical
+  registry: library/registry.json
+  sets: sets
+  cache_analysis: cache/analysis
+  cache_stems: cache/stems
+  renders: renders
+  ratings: ratings.jsonl
+  bench: bench/BENCH.md
+
+audio:
+  sample_rate: 44100
+  channels: 2
+  canonical_bit_depth: 16        # TPDF-dithered on ingest
+  ffmpeg_bin: ffmpeg
+
+genre:
+  # Constant-tempo grid search band (BPM). Half/double candidates are disambiguated into this band.
+  bpm_min: 116.0
+  bpm_max: 130.0
+  beats_per_bar: 4
+  bars_per_phrase: 8
+
+grid:
+  tracker: auto                  # auto | beat_this | madmom | librosa
+  residual_reject_ms: 30.0       # RANSAC-lite: drop beats with |residual| > this, refit
+  max_refit_iters: 6
+  min_inlier_frac: 0.90          # below → flag for griddoctor
+  confidence_flag_threshold: 0.90
+
+key:
+  backend: auto                  # auto | essentia | chroma_template
+  essentia_profile: edma
+
+camelot:
+  # Compatibility policy used as an L0 filter in v1. NORTHSTAR §5.4: must stay demotable to a soft prior.
+  mode: hard                     # hard | soft
+  allowed_moves: [same, plus_one, minus_one, relative]
+
+griddoctor:
+  excerpt_seconds: 30.0
+  excerpt_offset_frac: 0.25      # start the excerpt 25% into the track (past the intro)
+  click_freq_hz: 1000.0
+  downbeat_click_freq_hz: 1500.0
+  click_gain_db: -6.0
+
+logging:
+  level: INFO
