@@ -6,8 +6,10 @@ transitions, expert iteration).
 
 Read in order:
 
+0. `HANDOFF.md` — current state, environment, next session's ordered tasks, open decisions.
 1. `NORTHSTAR.md` — mission, theory, invariants, roadmap. *How* to build.
 2. `deephouse_ultracode_directive_v1.md` — phases, gates, schemas, algorithms. *What* to build next.
+3. `docs/GROOVE.md` — the micro-timing layer; `docs/SOURCING.md` — where the data comes from (Oct 2026 research, with notes in `docs/research/sourcing/`).
 
 ## Status
 

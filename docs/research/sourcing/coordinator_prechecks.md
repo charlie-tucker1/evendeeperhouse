@@ -1,0 +1,7 @@
+# Coordinator pre-checks (verified directly, 2026-10-07)
+
+- SoundCloud streaming formats (help.soundcloud.com "Audio Streaming Formats"): standard format is AAC; transcodings offered depend on upload quality: High (≥256k upload) → 256k/160k/96k; Medium (160–255k) → 160k/96k; Standard (<160k) → 96k only. Free listeners get 96k and 160k; Go+ listeners also get 256k. Legacy MP3 streams being migrated to AAC.
+- SoundCloud API blog (developers.soundcloud.com/blog/api-streaming-urls): http_mp3_128 / hls_mp3_128 / hls_opus_64 deprecated, removal planned Dec 31 2025; replacements hls_aac_160 (preferred) and hls_aac_96 (fallback). preview_mp3_128 kept.
+- yt-dlp soundcloud extractor (master): format ids are protocol_preset (e.g. hls_aac_160k); 'download' = uploader-enabled original (quality 10) fetched via tracks/{id}/download when downloadable; premium/HQ AAC (abr 256) only when authenticated — auth via oauth_token cookie (--cookies) or `--username oauth --password <token>`; no test verifies 256k actually returns.
+- Mixcloud (mixcloud.com post "New Feature Spotlight: HQ Audio", ~2022): standard streaming 64 kbps AAC+; HQ = ≥160 kbps Opus only for shows uploaded by Pro members since 2022 (revert on downgrade); on-demand capped at 160k by licensing; live streams up to 320k.
+- YouTube (yt-dlp issue #9724): itag 251 Opus (~130–160k class) and 140 AAC 128k are the standard audio-only formats; 256k formats (774 Opus, 141 AAC) are Premium-only and mainly on YouTube Music; no conclusive verification in the thread.
