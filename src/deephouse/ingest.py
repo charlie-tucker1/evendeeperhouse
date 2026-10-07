@@ -34,6 +34,7 @@ class RegistryEntry:
     duration_s: float | None
     ingested_at: float
     tags: list[str] = field(default_factory=list)
+    qa: dict | None = None         # audio_qa.BandwidthQA.to_dict() + ffprobe of the *source* file
 
 
 class Registry:
@@ -126,8 +127,26 @@ def canonicalize(ffmpeg_bin: str, src: Path, dst: Path, sr: int = 44100, channel
     tmp.replace(dst)
 
 
+def _source_qa(src: Path, ffmpeg_bin: str) -> dict:
+    """ffprobe the source container + measure effective bandwidth on a 60 s excerpt of the middle."""
+    from .acquire.feeds import ffprobe_audio
+    from .audio import load_audio
+    from .audio_qa import assess
+
+    probe = ffprobe_audio(src)
+    try:
+        dur = probe.get("duration_s") or 0.0
+        off = max((dur - 60.0) / 2.0, 0.0)
+        y, sr = load_audio(src, offset_s=off, duration_s=60.0 if dur > 60 else None, ffmpeg_bin=ffmpeg_bin)
+        q = assess(y, sr, probe.get("codec"), probe.get("declared_kbps")).to_dict()
+    except Exception as e:  # noqa: BLE001 — QA is best-effort, never blocks ingest
+        q = {"flag": "unknown", "note": f"qa failed: {e}"[:120]}
+    q["probe"] = probe
+    return q
+
+
 def ingest_path(cfg: Config, root: Path, kind: str = "track", tags: list[str] | None = None,
-                force: bool = False, log=print) -> list[RegistryEntry]:
+                force: bool = False, qa: bool = True, log=print) -> list[RegistryEntry]:
     """Ingest every audio file under ``root``. Returns the entries touched."""
     if kind not in ("track", "set"):
         raise ValueError("kind must be 'track' or 'set'")
@@ -157,7 +176,10 @@ def ingest_path(cfg: Config, root: Path, kind: str = "track", tags: list[str] | 
         entry = RegistryEntry(
             sha1=sha, kind=kind, source_path=str(src.resolve()), canonical_path=canonical_rel,
             duration_s=ffprobe_duration(ffmpeg_bin, src), ingested_at=time.time(), tags=list(tags or []),
+            qa=_source_qa(src, ffmpeg_bin) if qa else None,
         )
+        if entry.qa and entry.qa.get("flag") not in ("ok", "opus_normal", None):
+            log(f"      ⚠ QA {entry.qa['flag']}: {entry.qa.get('note', '')}")
         reg.entries[sha] = entry
         touched.append(entry)
         reg.save()  # save incrementally: a crash mid-batch loses nothing

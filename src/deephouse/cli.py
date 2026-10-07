@@ -39,11 +39,15 @@ def ingest(
     kind: str = typer.Option("track", "--kind", "-k", help="track | set"),
     tag: list[str] = typer.Option([], "--tag", "-t", help="Free-form tag(s) to attach"),
     force: bool = typer.Option(False, "--force", help="Re-canonicalise even if present"),
+    no_qa: bool = typer.Option(False, "--no-qa", help="Skip the effective-bandwidth / transcode check"),
 ) -> None:
-    """Decode audio → canonical FLAC (tracks) and register by SHA-1."""
+    """Decode audio → canonical FLAC (tracks) and register by SHA-1, with a transcode QA flag."""
     from .ingest import ingest_path
 
-    entries = ingest_path(ctx.obj, path, kind=kind, tags=tag, force=force, log=console.print)
+    entries = ingest_path(ctx.obj, path, kind=kind, tags=tag, force=force, qa=not no_qa, log=console.print)
+    bad = [e for e in entries if e.qa and e.qa.get("flag") in ("transcode_suspect", "dark_master_or_lossy")]
+    if bad:
+        console.print(f"[yellow]{len(bad)} file(s) flagged by QA — see `deephouse list` (qa column); flags are advisory[/]")
     console.print(f"[green]done[/] — {len(entries)} entr{'y' if len(entries) == 1 else 'ies'} in registry")
 
 
@@ -273,6 +277,57 @@ def listen(
     console.print(f"\nratings → {ratings_path}")
 
 
+feeds_app = typer.Typer(help="Podcast-RSS set acquisition (docs/SOURCING.md §3b).", no_args_is_help=True)
+app.add_typer(feeds_app, name="feeds")
+
+
+@feeds_app.command("list")
+def feeds_list() -> None:
+    """Show the curated feed registry (bitrates measured 2026-10-07)."""
+    from .acquire.feeds import FEEDS
+
+    t = Table(box=None, padding=(0, 1), header_style="bold")
+    for col in ("key", "show", "kbps", "items", "min", "genres", "host", "note"):
+        t.add_column(col)
+    for f in FEEDS:
+        t.add_row(f.key, f.name, str(f.median_kbps), str(f.items or "?"), str(f.typical_minutes or "?"), ",".join(f.genres), f.host, f.note)
+    console.print(t)
+
+
+@feeds_app.command("status")
+def feeds_status(ctx: typer.Context, feed: list[str] = typer.Argument(None, help="feed keys; default all")) -> None:
+    """Fetch each feed and report items / hours / already pulled."""
+    from .acquire.feeds import FEEDS, feed_by_key, status
+
+    keys = feed or [f.key for f in FEEDS]
+    total_h = 0.0
+    for k in keys:
+        st = status(ctx.obj, feed_by_key(k))
+        if st.error:
+            console.print(f"  {k:20s} [red]error[/] {st.error}")
+            continue
+        total_h += st.hours_in_feed
+        console.print(f"  {k:20s} {st.items:5d} items  {st.hours_in_feed:7.0f} h  pulled {st.pulled}")
+    console.print(f"[bold]total ≈ {total_h:.0f} h in the fetched feeds[/]")
+
+
+@feeds_app.command("pull")
+def feeds_pull(
+    ctx: typer.Context,
+    feed: list[str] = typer.Argument(..., help="feed keys from `feeds list`, or 'all'"),
+    max_items: int | None = typer.Option(None, "--max", help="newest N per feed"),
+    min_minutes: int = typer.Option(40, "--min-minutes"),
+    sleep: float = typer.Option(2.0, "--sleep", help="seconds between downloads"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+) -> None:
+    """Download enclosures (publisher-served originals) into sets/feeds/<feed>/ with provenance sidecars."""
+    from .acquire.feeds import FEEDS, feed_by_key, pull
+
+    keys = [f.key for f in FEEDS] if feed == ["all"] else feed
+    for k in keys:
+        pull(ctx.obj, feed_by_key(k), max_items=max_items, min_minutes=min_minutes, sleep_s=sleep, dry_run=dry_run, log=console.print)
+
+
 @app.command()
 def recipes() -> None:
     """List the v1 recipe grid."""
@@ -314,21 +369,23 @@ def list_cmd(ctx: typer.Context, kind: str = typer.Option("track", "--kind", "-k
 
     reg = Registry(ctx.obj.path("registry"))
     t = Table(title=f"registry — {kind}s")
-    for col in ("sha1", "name", "dur", "bpm", "beat0", "down", "conf", "key", "swing", "pump", "rev", "flags"):
+    for col in ("sha1", "name", "dur", "qa", "bpm", "beat0", "down", "conf", "key", "swing", "pump", "rev", "flags"):
         t.add_column(col)
     for e in reg.by_kind(kind):
         doc = store.load_analysis(ctx.obj, e.sha1)
         g = store.get_grid(doc) if doc else None
         dur = f"{e.duration_s / 60:.1f}m" if e.duration_s else "?"
+        qa = e.qa or {}
+        qa_s = f"{(qa.get('probe') or {}).get('codec') or '?'}/{(qa.get('probe') or {}).get('declared_kbps') or '?'} {qa.get('bandwidth_hz', 0) / 1000:.1f}k" + ("" if qa.get("flag") in ("ok", "opus_normal") else f" ⚠{qa.get('flag', '')}") if qa else "—"
         if g:
             k = (doc.get("key") or {})
             gr = (doc.get("groove") or {})
-            t.add_row(e.sha1[:10], Path(e.source_path).name[:40], dur, f"{g.bpm:.3f}", f"{g.beat0_s:.3f}", str(g.downbeat_offset),
+            t.add_row(e.sha1[:10], Path(e.source_path).name[:40], dur, qa_s, f"{g.bpm:.3f}", f"{g.beat0_s:.3f}", str(g.downbeat_offset),
                       f"{g.confidence:.2f}", k.get("override") or k.get("camelot") or "—",
                       f"{gr['swing_pct'] * 100:.0f}%" if gr else "—", f"{gr['pump_depth_db']:.1f}" if gr else "—",
                       "✓" if g.reviewed else "", " ".join(g.flags))
         else:
-            t.add_row(e.sha1[:10], Path(e.source_path).name[:40], dur, "—", "—", "—", "—", "—", "—", "—", "", "not analysed")
+            t.add_row(e.sha1[:10], Path(e.source_path).name[:40], dur, qa_s, "—", "—", "—", "—", "—", "—", "—", "", "not analysed")
     console.print(t)
 
 

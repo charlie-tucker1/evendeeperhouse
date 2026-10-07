@@ -77,6 +77,9 @@ deephouse structure <id>                 # sections + cue points
 deephouse render A B --cue-out 48 --cue-in 8 --recipe all     # 16 recipes → renders/<run>/
 deephouse next A --k 5 --render          # search the library from seed A, render the top 5
 deephouse listen renders/<run>           # rate them 1–5 (+tags) → ratings.jsonl
+deephouse feeds list                     # 15 verified podcast RSS feeds (192–320 kbps originals)
+deephouse feeds pull cattaneo --max 20   # sets/feeds/<feed>/ with provenance sidecars
+deephouse ingest <dir>                   # now with QA: effective bandwidth + encoder-cliff transcode check
 ```
 
 Listen to `click.wav`: clicks (1 kHz) must sit on the kicks, accents (1.5 kHz) on the 1.
@@ -94,7 +97,8 @@ ruff check .
 ```
 deephouse.yaml              config (paths, genre band, grid params, camelot policy)
 src/deephouse/
-  config.py  ingest.py  audio.py  synth.py  cli.py
+  config.py  ingest.py  audio.py  audio_qa.py  synth.py  cli.py
+  acquire/   feeds.py (podcast RSS route)
   analysis/  grid.py trackers.py griddoctor.py store.py analyze.py camelot.py
              features.py groove.py key.py sections.py
   render/    recipe.py dsp.py engine.py io.py

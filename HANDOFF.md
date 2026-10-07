@@ -65,10 +65,10 @@ on PATH (the renderer falls back to varispeed, which pitch-shifts — fine for �
    Record `search_wall_min`, `L1_triples_per_s` in `bench/BENCH.md`.
 5. **P2.3 L2 + P2.4 look-ahead** in `search/` (short-term LUFS std over the seam, spectral-flux
    continuity, low-end crest, chroma dissonance; one-ply `value(B)` from the pairwise L1 matrix).
-6. **Ingest QA (from `docs/SOURCING.md` §4):** add an effective-bandwidth / declared-bitrate check at
-   ingest (spectral rolloff vs the LAME lowpass table; Opus always shelves at 20 kHz, so don't
-   misclassify it) and store `codec`, `declared_kbps`, `measured_bandwidth_hz` in the sidecar — the
-   critic must never learn bitrate instead of quality (codec-matching rule, Decision 5).
+6. **Start the set corpus:** `deephouse feeds pull cattaneo dha crosstown yotto clapcast --max 50`
+   (≈ 250 h, ~35 GB, all ≥320 kbps) — then `ingest --kind set` and check the qa column. Ingest QA
+   is already in place (`audio_qa.py`); a real 320 kbps podcast reads `dark_master` (gradual rolloff,
+   no encoder cliff), which is normal — only `transcode_suspect` deserves a look.
 
 ## 4. Data acquisition — the plan is in `docs/SOURCING.md`
 
@@ -83,13 +83,28 @@ ground truth: Faraldo's Zenodo key sets (audio included), UnmixDB, mixotic, Rave
 EDM-CUE; MixesDB is live again with a MediaWiki API. Juno Download closed (Jun 2026); Beatsource
 folded into Beatport (Mar 2026); record pools' terms forbid building databases.
 
-**Decisions Charlie still needs to make** (§7 of the report, defaults in parentheses): lossless vs
-320 for the library (lossless for anything rendered); whether to use yt-dlp at all (bounded, logged
-subsets only); Digital DJ Pool (skip); SoundCloud Go+ (no); codec-match the critic (yes); gold series
-order (fabric → GU → Balance → DJ-Kicks → Toolroom → Anjunadeep last); MixesDB crawl vs Raveform
-(Raveform first); crowd-reaction mining (gold-as-reward first, pilot later); YouTube Data API vs
-heatmap (don't build on the API's 30-day retention rules); store mix for breadth; publishing renders
-(private only).
+**Decided by Charlie (2026-10-07):**
+- **Rips: bounded subsets only.** yt-dlp is allowed only for data with no substitute — Raveform's
+  1,423 annotated tracks (structure eval) and a 3-video crowd-presence test on Boiler Room/Cercle/HÖR —
+  run from his own machine, logged with provenance. Never for a set that has an RSS twin. SSL volume
+  comes from RSS feeds + MTG-Jamendo.
+- **Library format: lossless everywhere.** FLAC/WAV for every library track (Bandcamp/Volumo at no
+  premium; Beatport +$0.70; the gold comps ship lossless).
+- **Gold: seed of three first** — fabric presents Carlita, GU48 Guy J, Balance 031 — then expand
+  after the real-track pipeline runs on them.
+- **Prices:** Charlie verifies Bandcamp/Traxsource prices himself (research IPs were bot-blocked).
+
+Defaults from `docs/SOURCING.md` §7 stand for the rest unless he says otherwise: Digital DJ Pool
+skip; SoundCloud Go+ no; codec-match the critic yes (train/score on codec-matched audio, log codec
+per example); MixesDB — Raveform first, then an incremental crawl of the two house categories;
+crowd-reaction mining — gold-as-reward first, pilot later; YouTube Data API — don't architect on its
+30-day retention rules; renders private only.
+
+**Tools that already implement the plan:** `deephouse feeds list|status|pull` (15 verified RSS
+feeds, provenance sidecars, ~6,000 h at 192–320 kbps; one real pull verified: Yotto #105, 61 min,
+320 kbps, 5 s) and the ingest QA (`audio_qa.py`: effective bandwidth + encoder-cliff detection;
+flags `transcode_suspect` on fake-320/fake-FLAC, `dark_master` on genuine dark masters, never
+rejects — see `deephouse list` qa column).
 
 ## 5. Things that will bite
 
